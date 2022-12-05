@@ -1,7 +1,9 @@
 import sys
 import re
 
-with open(sys.argv[1], 'r') as inp:
+ins_re = r'move (\d+) from (\d+) to (\d+)'
+
+def read_stacks(inp):
     stacks_s = []
 
     l = inp.readline()
@@ -19,18 +21,36 @@ with open(sys.argv[1], 'r') as inp:
                 stacks[idx].append(crate)
     
     stacks = [stack[::-1] for stack in stacks]
+    
+    return stacks
 
-    ins_re = r'move (\d+) from (\d+) to (\d+)'
+def process_file(inp, process_instruction):
+    stacks = read_stacks(inp)
     
     l = inp.readline()
     while l:
         m = re.match(ins_re, l)
-        mov_count, mov_from, mov_to = m.groups()
-
-        for _ in range(int(mov_count)):
-            crate = stacks[int(mov_from)-1].pop()
-            stacks[int(mov_to)-1].append(crate)
+        assert len(m.groups()) == 3
+        process_instruction(stacks, *[int(x) for x in m.groups()])
 
         l = inp.readline()
 
     print(''.join([stack.pop().replace('[', '').replace(']', '') for stack in stacks]))
+
+def part1(stacks, mov_count, mov_from, mov_to):
+    for _ in range(mov_count):
+        crate = stacks[mov_from-1].pop()
+        stacks[mov_to-1].append(crate)
+
+def part2(stacks, mov_count, mov_from, mov_to):
+    crates = stacks[mov_from-1][-1*mov_count:]
+    stacks[mov_from-1] = stacks[mov_from-1][:-1*mov_count]
+    stacks[mov_to-1] += crates
+
+with open(sys.argv[1], 'r') as inp:
+    print('part1',)
+    process_file(inp, part1)
+    inp.seek(0)
+    print('part2',)
+    process_file(inp, part2)
+ 
