@@ -24,7 +24,9 @@ def move_sprite():
     global scanline
     scanline = [DARK]*40
     for idx in range(X-1, X+2):
-        scanline[idx%40] = LIGHT
+        if not 0 <= idx <= 39:
+            continue
+        scanline[idx] = LIGHT
     if debug_scanline:
         print(''.join(scanline))
 
