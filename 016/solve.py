@@ -4,12 +4,15 @@ import logging
 import argparse
 import re
 import time
+import random
 
 from pprint import pprint, pformat
-from functools import total_ordering
+from functools import total_ordering, reduce
 
 parser = argparse.ArgumentParser()
 parser.add_argument('inp', type=argparse.FileType('r'))
+parser.add_argument('player_count', help='player count', type=int)
+parser.add_argument('max_minutes', help='minute limit', type=int)
 parser.add_argument('-v', '--verbose', action='count', default=0)
 args = parser.parse_args()
 
@@ -103,10 +106,16 @@ def valve_str(valves):
 def pressure_tick(vopen):
     return sum(map(lambda x: x.flowrate, vopen))
 
-def maximum_additional_pressure(minute, valve, vopen):
-    global valves
+def maximum_additional_pressure(max_minutes, current, valves_with_flow, vopen_all):
+    
+    # assume we open everything not opened yet with the maximum amount of minutes left
+    max_left = min(current, key=lambda x: x[0])[0]
+    return sum([(max_minutes - max_left + 1) * x.flowrate for x in valves_with_flow])
+    valves_not_open = [x for x in valves_with_flow if x not in vopen_all]
+    # print(max_minutes - max_left + 1)
+    # return sum([(max_minutes) * x.flowrate for x in valves_not_open])
 
-    minutes = 30 - minute + 1
+    minutes = max_minutes - minute + 1
 
     return sum(map(lambda x: x.flowrate * minutes, valves))
 
@@ -132,8 +141,9 @@ def reconstruct_path(camefrom, current):
 
 def path_to_str(path):
     ret = ''
-    for minute, valve, vopen in path[::-1]:
-        ret += f'Minute {minute:2d} @ {valve.name}, release {pressure_tick(vopen):4d} pressure, open: {valve_str(vopen)}\n'
+    for pidx, p in enumerate(zip(*path)):
+        for minute, valve, vopen in p[::-1]:
+            ret += f'Player {pidx:2d} Minute {minute:2d} @ {valve.name}, release {pressure_tick(vopen):4d} pressure, open: {valve_str(vopen)}\n'
     return ret
 
 def update(current, next_, score, gscore, camefrom, openset):
@@ -143,11 +153,12 @@ def update(current, next_, score, gscore, camefrom, openset):
         if next_ not in openset:
             openset.append(next_)
 
-def solve1():
+def solve():
     global valves
     global valve_paths
 
-    MAX_MINUTES = 30
+    MAX_MINUTES = args.max_minutes
+    PCOUNT = args.player_count
 
     start = next(filter(lambda x: x.name == 'AA', valves))
     valves_with_flow = tuple(filter(lambda x: x.flowrate, valves))
@@ -156,7 +167,7 @@ def solve1():
     camefrom = {}
     openset = []
 
-    init = (1, start, ())
+    init = tuple((1, start, (),) for _ in range(PCOUNT))
 
     gscore[init] = 0
     openset.append(init)
@@ -165,122 +176,70 @@ def solve1():
     highest_path = None
 
     t = time.time()
+    t2 = time.time()
     while openset:
         # A* without heuristic, just use currently highest gscore
         # Take the state with the highest potential pressure
-        current = sorted(openset, key=lambda x: gscore[x], reverse=True)[0]
-        openset.remove(current)
-        minute, valve, vopen = current
+        if time.time() - t2 > 1:
+            current = random.choice(openset)
+            openset.remove(current)
+        else:
+            current = sorted(openset, key=lambda x: gscore[x], reverse=True)[0]
+            openset.remove(current)
+            t2 = time.time()
+        # current = openset.pop()
 
-        logger.debug(f'{minute=} {len(openset)=} {valve.name=} {gscore[current]=} {valve_str(vopen)=}')
+        # current = random.choice(openset)
+        # openset.remove(current)
+
+        # current = random.choices(openset, weights=gscore, k=1)
+        # openset.remove(current)
+
+        vopen_all = tuple(x for p in current for x in p[2])
+
+        logger.debug(f'{current=} {len(openset)=} {valve_str(valves)=} {gscore[current]=} {valve_str(vopen_all)=}')
         if time.time() - t > 5:
-            logger.info(f'{minute=} {len(openset)=} {valve.name=} {gscore[current]=} {valve_str(vopen)=}')
+            logger.info(f'{highest_gscore=} {len(openset)=} {gscore[current]=} {valve_str(vopen_all)=} {[p[0] for p in current]}')
             t = time.time()
         
         # # Ignore this path if it will be lower than the current highest gscore
-        # if gscore[current] + maximum_additional_pressure(*current) < highest_gscore:
-        #     continue
+        if gscore[current] + maximum_additional_pressure(MAX_MINUTES, current, valves_with_flow, vopen_all) < highest_gscore:
+            logger.debug(f'{gscore[current]} + {maximum_additional_pressure(MAX_MINUTES, current, valves_with_flow, vopen_all)} < {highest_gscore}')
+            continue
 
         # Time's up
-        if minute == MAX_MINUTES:
+        if reduce(lambda x,y: x & y, [p[0] == MAX_MINUTES for p in current]):
             if gscore[current] > highest_gscore:
                 highest_gscore = gscore[current]
                 highest_path = reconstruct_path(camefrom, current)
                 logger.info(f'{highest_gscore=}')
             continue
         
-        # Add option to stay and do nothing
-        score = gscore[(minute, valve, vopen)] + (MAX_MINUTES - minute + 1) * pressure_tick(vopen)
-        next_ = (MAX_MINUTES, valve, vopen)
+        # Add option to stay and do nothing, maybe needs per current item, maybe can get away with not 
+        # doing that as eventually all valves will be open and this option will work for all
+        score = gscore[current] + sum([(MAX_MINUTES - p[0] + 1) * pressure_tick(p[2]) for p in current])
+        next_ = tuple([(MAX_MINUTES, p[1], p[2]) for p in current])
         update(current, next_, score, gscore, camefrom, openset)
         
         # Add options to go to next unopened valve with flow and open it
         for valve_next in valves_with_flow:
-            if valve_next not in vopen:
-                minutes_to_valve_next = valve_paths[valve][valve_next]
-                # Add one minute to open it
-                minutes_to_valve_next += 1
-                if minutes_to_valve_next < MAX_MINUTES - minute:
-                    score = gscore[(minute, valve, vopen)] + minutes_to_valve_next * pressure_tick(vopen)
-                    vopen_ = tuple(sorted((valve_next,) + vopen))
-                    next_ = (minute + minutes_to_valve_next, valve_next, vopen_)
-                    update(current, next_, score, gscore, camefrom, openset)
+            if valve_next not in vopen_all:
+                # Give all in current a chance
+                for pidx, (minute, valve, vopen) in enumerate(current):
+                    minutes_to_valve_next = valve_paths[valve][valve_next]
+                    # Add one minute to open it
+                    minutes_to_valve_next += 1
+                    if minutes_to_valve_next < MAX_MINUTES - minute:
+                        score = gscore[current] + minutes_to_valve_next * pressure_tick(vopen)
+                        vopen_ = tuple(sorted((valve_next,) + vopen))
+                        next_ = current[:pidx] + ((minute + minutes_to_valve_next, valve_next, vopen_),) + current[pidx+1:]
+                        update(current, next_, score, gscore, camefrom, openset)
 
     logger.info(path_to_str(highest_path))
-    print(f'{highest_gscore=}')
-
-def solve2():
-    global valves
-    global valve_paths
-
-    MAX_MINUTES = 26
-
-    # (valve, vopen, vclosed, minutes, pressure, priority, debug)
-    start = next(filter(lambda x: x.name == 'AA', valves))
-    valves_with_flow = tuple(filter(lambda x: x.flowrate, valves))
-    
-    gscore = {}
-    camefrom = {}
-    openset = []
-
-    init = (1, (start, start), ())
-
-    gscore[init] = 0
-    openset.append(init)
-    
-    highest_gscore = 0
-    highest_path = None
-
-    t = time.time()
-    while openset:
-        # A* without heuristic, just use currently highest gscore
-        # Take the state with the highest potential pressure
-        current = sorted(openset, key=lambda x: gscore[x], reverse=True)[0]
-        openset.remove(current)
-        minute, valves, vopen = current
-
-        logger.debug(f'{minute=} {len(openset)=} {valve_str(valves)=} {gscore[current]=} {valve_str(vopen)=}')
-        if time.time() - t > 5:
-            logger.info(f'{minute=} {len(openset)=} {valve_str(valves)=} {gscore[current]=} {valve_str(vopen)=}')
-            t = time.time()
-        
-        # # Ignore this path if it will be lower than the current highest gscore
-        # if gscore[current] + maximum_additional_pressure(*current) < highest_gscore:
-        #     continue
-
-        # Time's up
-        if minute == MAX_MINUTES:
-            if gscore[current] > highest_gscore:
-                highest_gscore = gscore[current]
-                highest_path = reconstruct_path(camefrom, current)
-                logger.info(f'{highest_gscore=}')
-            continue
-        
-        # Add option to stay and do nothing
-        score = gscore[(minute, valves, vopen)] + (MAX_MINUTES - minute + 1) * pressure_tick(vopen)
-        next_ = (MAX_MINUTES, valves, vopen)
-        update(current, next_, score, gscore, camefrom, openset)
-        
-        # Add options to go to next unopened valve with flow and open it
-        valves_to_visit = filter(lambda v: v not in vopen, valves_with_flow)
-        
-
-        for valve_next in valves_with_flow:
-            if valve_next not in vopen:
-                minutes_to_valve_next = valve_paths[valve][valve_next]
-                # Add one minute to open it
-                minutes_to_valve_next += 1
-                if minutes_to_valve_next < MAX_MINUTES - minute:
-                    score = gscore[(minute, valve, vopen)] + minutes_to_valve_next * pressure_tick(vopen)
-                    vopen_ = tuple(sorted((valve_next,) + vopen))
-                    next_ = (minute + minutes_to_valve_next, valve_next, vopen_)
-                    update(current, next_, score, gscore, camefrom, openset)
-
-    logger.info(path_to_str(highest_path))
-    print(f'{highest_gscore=}')
+    print(f'{highest_gscore}')
 
 with args.inp as inp:
     ls = inp.read()
     read_valves(ls)
     calc_valve_paths()
-    solve1()
+    solve()
